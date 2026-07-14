@@ -58,9 +58,8 @@ chmod +x "${payload_script}"
 bash -n "${payload_script}"
 bash "${payload_script}"
 
-# Keep the readable, fully decoded migration script in the resulting repository.
-cp "${payload_script}" "${script_dir}/bootstrap_from_ulx3s.sh"
+# Atomically replace this running wrapper so Bash keeps reading the old inode safely.
+mv "${payload_script}" "${script_dir}/bootstrap_from_ulx3s.sh"
 chmod +x "${script_dir}/bootstrap_from_ulx3s.sh"
 rm -f "${script_dir}"/bootstrap.part*.b64 "${transport_b64}" "${verified_b64}"
 trap - EXIT
-rm -f "${payload_script}"
