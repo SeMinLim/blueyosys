@@ -18,3 +18,13 @@ jobs:
 
       - name: Validate hierarchy and preserved projects
         run: make lint
+
+      - name: Package tree for final audit
+        run: tar --exclude=.git -czf /tmp/blueYosys-tree.tar.gz .
+
+      - name: Upload final-audit tree
+        uses: actions/upload-artifact@v4
+        with:
+          name: final-audit-${{ github.run_number }}
+          path: /tmp/blueYosys-tree.tar.gz
+          if-no-files-found: error
