@@ -21,16 +21,27 @@ import sys
 
 path = Path(sys.argv[1])
 data = path.read_bytes()
-repairs = (
-    (b"BORD_BSIM_TOP_SOURCE", b"BOARD_BSIM_TOP_SOURCE"),
-    ("핣성".encode("utf-8"), "합성".encode("utf-8")),
-)
-for old, new in repairs:
-    count = data.count(old)
-    print(f"repairing {old!r}: {count} occurrence(s)", flush=True)
-    if count != 1:
-        raise SystemExit(f"unexpected decoded repair count for {old!r}: {count}")
-    data = data.replace(old, new, 1)
+
+expected_line = b"BSIM_TOP_SOURCE ?= $(BOARD_BSIM_TOP_SOURCE)"
+lines = data.splitlines(keepends=True)
+line_matches = 0
+for index, line in enumerate(lines):
+    if line.startswith(b"BSIM_TOP_SOURCE ?="):
+        ending = b"\n" if line.endswith(b"\n") else b""
+        print(f"repairing build-variable line: {line.rstrip()!r}", flush=True)
+        lines[index] = expected_line + ending
+        line_matches += 1
+if line_matches != 1:
+    raise SystemExit(f"unexpected BSIM_TOP_SOURCE line count: {line_matches}")
+data = b"".join(lines)
+
+old_korean = "핣성".encode("utf-8")
+new_korean = "합성".encode("utf-8")
+korean_matches = data.count(old_korean)
+print(f"repairing Korean transport substitution: {korean_matches} occurrence(s)", flush=True)
+if korean_matches != 1:
+    raise SystemExit(f"unexpected Korean repair count: {korean_matches}")
+data = data.replace(old_korean, new_korean, 1)
 path.write_bytes(data)
 PY
 
