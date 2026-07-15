@@ -1,7 +1,16 @@
 BOARD_READY := 1
 BOARD_FAMILY := ecp5
 BOARD_STATUS := supported
-APIO_BOARD := ulx3s-85f
+
+# Direct open-source ECP5 flow. APIO is intentionally not required.
+BOARD_YOSYS_SYNTH := synth_ecp5
+BOARD_YOSYS_FLAGS :=
+BOARD_PNR_TOOL ?= nextpnr-ecp5
+BOARD_PNR_FLAGS := --85k --package CABGA381
+BOARD_PACK_TOOL ?= ecppack
+BOARD_PACK_FLAGS := --idcode 0x41113043
+BOARD_PROGRAMMER ?= ujprog
+BOARD_PROGRAMMER_FLAGS ?=
 
 COMMON_BSV_DIRS := $(ROOTDIR)/lib/bsv
 PLATFORM_BSV_DIRS := $(ROOTDIR)/platforms/ecp5/bsv
