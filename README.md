@@ -41,8 +41,6 @@
   * Architecture notes, board-porting guidance, and repository validation metadata.
 * `src/`
   * Stable compatibility facade exposing commonly used BSV, RTL, constraint, and C++ paths to existing project code.
-* `.github/workflows/`
-  * Continuous-integration checks for repository hierarchy, preserved project contents, scripts, Makefiles, and source-built utilities.
 * `Makefile`
   * Repository-level dispatcher used to select a project and board from a single command line.
 
