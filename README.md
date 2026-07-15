@@ -1,19 +1,22 @@
 # blueYosys
 * **An Advanced, High-Performance Boilerplate Codebase for Lattice ECP5-Based Embedded FPGA Kernel Development using Yosys Opensource Toolchain and Bluespec SystemVerilog (BSV).**
 
-* `blueYosys` is a reusable development environment for designing embedded FPGA kernels in BSV, compiling them into Verilog, building Lattice ECP5 bitstreams with the open-source Yosys toolchain, running Bluesim simulations, and communicating with the FPGA through host-side software.
-* It exists to keep kernel logic independent from board-specific infrastructure, eliminate duplicated build scripts, and provide a consistent starting point for new accelerators, processors, peripherals, and future FPGA-board ports.
+* `blueYosys` is a reusable development environment for designing embedded FPGA kernels in BSV, generating synthesizable Verilog, building Lattice ECP5 bitstreams with the open-source Yosys toolchain, running Bluesim simulations, and communicating with the FPGA through host-side software.
+* It exists to separate reusable kernel logic from board-specific infrastructure, remove duplicated build scripts, and provide a consistent starting point for accelerators, processors, peripherals, and future FPGA-board ports.
 
 ## Development flow
 1. Bluespec Compiler (`bsc`) elaborates the selected BSV project and generates synthesizable Verilog.
-2. `blueYosys` combines the generated Verilog with common runtime RTL, ECP5 primitives, board-level wrappers, and pin constraints.
-3. APIO drives Yosys and nextpnr-ecp5 to synthesize, place, route, and package the FPGA bitstream.
-4. The same project can be validated with Bluesim or programmed onto the target board through the shared Makefile interface.
+2. Yosys runs the ECP5 synthesis pass and writes a JSON technology netlist.
+3. `nextpnr-ecp5` places and routes the design using the selected board package and LPF constraints.
+4. Project Trellis `ecppack` converts the routed configuration into an ECP5 `.bit` file.
+5. An optional programmer such as `ujprog` or `openFPGALoader` loads the bitstream onto the board.
+
+* APIO is **not required**. `blueYosys` invokes `bsc`, `yosys`, `nextpnr-ecp5`, and `ecppack` directly so every stage remains explicit, inspectable, and independently replaceable.
 
 ## File structure
 * `boards/`
-  * Board-specific top modules, peripherals, constraints, RTL wrappers, and build metadata.
-  * `boards/ulx3s/`: build-ready ULX3S-85F support, including the top-level BSV module, SDRAM interface, PLL integration, ECP5 pin constraints, and APIO board selection.
+  * Board-specific top modules, peripherals, constraints, RTL wrappers, programmer defaults, and build metadata.
+  * `boards/ulx3s/`: build-ready ULX3S-85F support, including the top-level BSV module, SDRAM interface, PLL integration, ECP5 pin constraints, CABGA381 package selection, and device ID.
   * `boards/ice40/`: an explicit scaffold for future ICE40 board support. It is intentionally not marked build-ready until a concrete board, constraints, clock/reset logic, and primitive backends are provided.
 * `platforms/`
   * FPGA-family and compiler-runtime implementations shared by one or more boards.
@@ -29,7 +32,7 @@
   * Each project owns its BSV kernel logic, optional processor or data files, host-side C/C++ application, and a small Makefile that imports the common build system.
   * Included projects: `image_proc`, `matrix4x4`, `nn_fc`, `nn_fc_accel`, `nn_fc_zfpe`, `rv32i`, and `test`.
 * `mk/`
-  * Shared Makefile implementation for synthesis, Bluesim, host compilation, programming, cleanup, and board selection.
+  * Shared Makefile implementation for BSV elaboration, Yosys synthesis, place-and-route, bitstream packing, Bluesim, host compilation, programming, cleanup, and board selection.
   * Project Makefiles normally define only project-specific paths or overrides and then include `mk/project.mk`.
 * `scripts/`
   * Repository validation and generated-Verilog post-processing utilities.
@@ -42,14 +45,17 @@
 * `src/`
   * Stable compatibility facade exposing commonly used BSV, RTL, constraint, and C++ paths to existing project code.
 * `Makefile`
-  * Repository-level dispatcher used to select a project and board from a single command line.
+  * Repository-level dispatcher used to select a project, board, and build stage from a single command line.
 
 ## Prerequisites & Dependencies
 * Environment Setup
   * Operating System: Linux is recommended.
   * Hardware Description Language: Bluespec SystemVerilog.
   * Compiler and Simulator: Bluespec Compiler (`bsc`) and Bluesim.
-  * FPGA Toolchain: APIO, Yosys, nextpnr-ecp5, and the ECP5 bitstream/programming tools provided by the selected APIO environment.
+  * Logic Synthesis: Yosys with ECP5 support.
+  * Place and Route: `nextpnr-ecp5`.
+  * Bitstream Packing: Project Trellis `ecppack`.
+  * FPGA Programming: `ujprog` by default; another programmer can be selected through Make variables.
   * Host Development: GNU Make, GCC/G++, Python 3, and pthread support.
 * Supported Hardware
   * Lattice ECP5 on the ULX3S-85F board is the current build-ready target.
@@ -60,18 +66,41 @@
 
 * List available projects
   * ```make list-projects```
-* Validate the repository hierarchy and utilities
+* Validate the repository hierarchy and source-built utilities
   * ```make lint```
-* Hardware synthesis and bitstream generation
+* Generate Verilog from BSV only
+  * ```make verilog PROJECT=test BOARD=ulx3s```
+* Run Yosys and create the ECP5 JSON netlist
+  * ```make netlist PROJECT=test BOARD=ulx3s```
+* Run place-and-route
+  * ```make pnr PROJECT=test BOARD=ulx3s```
+* Pack the routed design into a bitstream
+  * ```make bitstream PROJECT=test BOARD=ulx3s```
+* Run the complete hardware flow
   * ```make synth PROJECT=test BOARD=ulx3s```
-* Bluesim compilation
+  * The resulting bitstream is written to `projects/test/build/mkTop.bit`.
+* Build the project host application separately
+  * ```make host PROJECT=test```
+* Compile a Bluesim simulation
   * ```make bsim PROJECT=matrix4x4 BOARD=ulx3s```
 * Build and run a Bluesim simulation
   * ```make runsim PROJECT=matrix4x4 BOARD=ulx3s```
-* Program the FPGA
+* Program the FPGA with the default ULX3S programmer
   * ```make program PROJECT=test BOARD=ulx3s```
+* Select another programmer
+  * ```make program PROJECT=test BOARD=ulx3s PROGRAMMER=openFPGALoader PROGRAMMER_FLAGS="-b ulx3s"```
 * Build a project directly from its directory
   * ```make -C projects/test synth BOARD=ulx3s```
+
+## Build stages
+The common hardware flow is intentionally split into independently callable targets:
+
+```text
+verilog -> netlist -> pnr -> bitstream -> synth
+   bsc       yosys    nextpnr     ecppack
+```
+
+This makes it possible to stop after BSV elaboration, inspect intermediate Verilog or JSON, replace an individual backend, or debug a failing stage without rerunning an opaque wrapper.
 
 ## Cleaning the Workspace
 * `make clean PROJECT=<name>`: removes the selected project's synthesis output, Bluesim output, host object directory, and simulation logs.
