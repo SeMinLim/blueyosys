@@ -50,23 +50,31 @@ bool runTest( int testIdx, float a, float b, float c ) {
 	sendFloat(b);
 	sendFloat(c);
 
-	FloatData readA = receiveFloat();
-	FloatData readB = receiveFloat();
-	FloatData readC = receiveFloat();
+	FloatData singleReadA = receiveFloat();
+	FloatData singleReadB = receiveFloat();
+	FloatData singleReadC = receiveFloat();
+	FloatData burstReadA = receiveFloat();
+	FloatData burstReadB = receiveFloat();
+	FloatData burstReadC = receiveFloat();
 	FloatData result = receiveFloat();
 	float expected = (a * b) + c;
 
-	bool sdramPass =
-		(readA.bits == inputA.bits) &&
-		(readB.bits == inputB.bits) &&
-		(readC.bits == inputC.bits);
+	bool singleSdramPass =
+		(singleReadA.bits == inputA.bits) &&
+		(singleReadB.bits == inputB.bits) &&
+		(singleReadC.bits == inputC.bits);
+	bool burstSdramPass =
+		(burstReadA.bits == inputA.bits) &&
+		(burstReadB.bits == inputB.bits) &&
+		(burstReadC.bits == inputC.bits);
 	bool macPass = fabsf(result.value - expected) <= 0.001f;
-	bool pass = sdramPass && macPass;
+	bool pass = singleSdramPass && burstSdramPass && macPass;
 
 	printf( "Test %d: A=%f B=%f C=%f\n", testIdx, a, b, c );
-	printf( "SDRAM Read-back : %s\n", sdramPass ? "PASS" : "FAIL" );
-	printf( "MAC Result      : %f (Expected %f)\n", result.value, expected );
-	printf( "Result          : %s\n", pass ? "PASS" : "FAIL" );
+	printf( "SDRAM BL1 Read-back   : %s\n", singleSdramPass ? "PASS" : "FAIL" );
+	printf( "SDRAM Burst Read-back : %s\n", burstSdramPass ? "PASS" : "FAIL" );
+	printf( "MAC Result            : %f (Expected %f)\n", result.value, expected );
+	printf( "Result                : %s\n", pass ? "PASS" : "FAIL" );
 	printf( "---------------------------------------------------------------------\n" );
 	fflush( stdout );
 
@@ -77,7 +85,7 @@ void* swmain( void* param ) {
 	(void)param;
 
 	printf( "---------------------------------------------------------------------\n" );
-	printf( "[STEP 1] Starting UART, SDRAM, and MAC tests\n" );
+	printf( "[STEP 1] Starting UART, SDRAM BL1, SDRAM burst, and MAC tests\n" );
 	printf( "---------------------------------------------------------------------\n" );
 	fflush( stdout );
 
