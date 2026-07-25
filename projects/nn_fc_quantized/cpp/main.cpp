@@ -8,14 +8,14 @@
 #include "nn_fc.h"
 
 
-#ifndef QUANTIZED_WIDTH
-#define QUANTIZED_WIDTH 8
-#endif
-
 #define INPUT_CNT 64
 #define INPUT_DIM 1024
 #define OUTPUT_DIM 64
 #define RESULT_TOLERANCE 0.01f
+#define DEFAULT_QUANTIZED_WIDTH 8
+
+
+int quantizedWidth = DEFAULT_QUANTIZED_WIDTH;
 
 
 typedef union FloatBit8 {
@@ -23,67 +23,55 @@ typedef union FloatBit8 {
 	uint8_t bytes[4];
 } FloatBit8;
 
-float getInputInverseScale() {
-#if QUANTIZED_WIDTH == 4
-	return 0.5f;
-#elif QUANTIZED_WIDTH == 16
-	return 1024.0f;
-#else
+bool isValidQuantizedWidth(int width) {
+	return width == 4 || width == 8 || width == 16;
+}
+
+float getInputInverseScale(int width) {
+	if ( width == 4 ) return 0.5f;
+	if ( width == 16 ) return 1024.0f;
 	return 8.0f;
-#endif
 }
 
-float getOutputScale() {
-#if QUANTIZED_WIDTH == 4
-	return 512.0f;
-#elif QUANTIZED_WIDTH == 16
-	return 0.25f;
-#else
+float getOutputScale(int width) {
+	if ( width == 4 ) return 512.0f;
+	if ( width == 16 ) return 0.25f;
 	return 32.0f;
-#endif
 }
 
-int getRequantizationShift() {
-#if QUANTIZED_WIDTH == 4
-	return 7;
-#elif QUANTIZED_WIDTH == 16
-	return 18;
-#else
+int getRequantizationShift(int width) {
+	if ( width == 4 ) return 7;
+	if ( width == 16 ) return 18;
 	return 11;
-#endif
 }
 
-int32_t getQuantizedMin() {
-	return -(1 << (QUANTIZED_WIDTH - 1));
+int32_t getQuantizedMin(int width) {
+	return -(1 << (width - 1));
 }
 
-int32_t getQuantizedMax() {
-	return (1 << (QUANTIZED_WIDTH - 1)) - 1;
+int32_t getQuantizedMax(int width) {
+	return (1 << (width - 1)) - 1;
 }
 
-int32_t saturateQuantized(int64_t value) {
-	int32_t minValue = getQuantizedMin();
-	int32_t maxValue = getQuantizedMax();
+int32_t saturateQuantized(int64_t value, int width) {
+	int32_t minValue = getQuantizedMin(width);
+	int32_t maxValue = getQuantizedMax(width);
 
 	if ( value > maxValue ) return maxValue;
 	if ( value < minValue ) return minValue;
 	return (int32_t)value;
 }
 
-int getTestQuantizedMagnitudeMax() {
-#if QUANTIZED_WIDTH == 4
-	return 5;
-#elif QUANTIZED_WIDTH == 16
-	return 10240;
-#else
+int getTestQuantizedMagnitudeMax(int width) {
+	if ( width == 4 ) return 5;
+	if ( width == 16 ) return 10240;
 	return 80;
-#endif
 }
 
-int32_t quantizeValue(float value) {
-	double scaledValue = (double)value * (double)getInputInverseScale();
+int32_t quantizeValue(float value, int width) {
+	double scaledValue = (double)value * (double)getInputInverseScale(width);
 	int64_t roundedValue = (int64_t)llround(scaledValue);
-	return saturateQuantized(roundedValue);
+	return saturateQuantized(roundedValue, width);
 }
 
 int64_t roundingRightShift(int64_t value, int shift) {
@@ -96,12 +84,12 @@ int64_t roundingRightShift(int64_t value, int shift) {
 	return negative ? -(int64_t)roundedMagnitude : (int64_t)roundedMagnitude;
 }
 
-int32_t requantizeAccumulator(int64_t accumulator) {
+int32_t requantizeAccumulator(int64_t accumulator, int width) {
 	int64_t roundedValue = roundingRightShift(
 		accumulator,
-		getRequantizationShift()
+		getRequantizationShift(width)
 	);
-	return saturateQuantized(roundedValue);
+	return saturateQuantized(roundedValue, width);
 }
 
 void calculateFloatGolden(
@@ -123,7 +111,8 @@ void calculateFloatGolden(
 void calculateQuantizedGolden(
 	float* weights,
 	float* inputs,
-	float* answer
+	float* answer,
+	int width
 ) {
 	int32_t* quantizedWeights =
 		(int32_t*)malloc(sizeof(int32_t) * INPUT_DIM * OUTPUT_DIM);
@@ -137,10 +126,10 @@ void calculateQuantizedGolden(
 	}
 
 	for ( int i = 0; i < INPUT_DIM * OUTPUT_DIM; i ++ ) {
-		quantizedWeights[i] = quantizeValue(weights[i]);
+		quantizedWeights[i] = quantizeValue(weights[i], width);
 	}
 	for ( int i = 0; i < INPUT_DIM * INPUT_CNT; i ++ ) {
-		quantizedInputs[i] = quantizeValue(inputs[i]);
+		quantizedInputs[i] = quantizeValue(inputs[i], width);
 	}
 
 	for ( int i = 0; i < INPUT_CNT; i ++ ) {
@@ -152,14 +141,18 @@ void calculateQuantizedGolden(
 					(int64_t)quantizedInputs[i * INPUT_DIM + k];
 			}
 
-			int32_t quantizedOutput = requantizeAccumulator(accumulator);
+			int32_t quantizedOutput = requantizeAccumulator(accumulator, width);
 			answer[i * OUTPUT_DIM + j] =
-				(float)quantizedOutput * getOutputScale();
+				(float)quantizedOutput * getOutputScale(width);
 		}
 	}
 
 	free(quantizedWeights);
 	free(quantizedInputs);
+}
+
+void sendQuantizedWidth(int width) {
+	uart_send((uint8_t)width);
 }
 
 void sendWeight(float data) {
@@ -213,6 +206,14 @@ void* swmain(void* param) {
 	(void)param;
 	srand(1);
 
+	char* widthEnv = getenv("NN_FC_WIDTH");
+	if ( widthEnv != NULL ) quantizedWidth = atoi(widthEnv);
+	if ( !isValidQuantizedWidth(quantizedWidth) ) {
+		printf( "Quantized width must be 4, 8, or 16.\n" );
+		fflush( stdout );
+		exit(1);
+	}
+
 	printf( "---------------------------------------------------------------------\n" );
 	printf( "[STEP 1] Generating signed FC weights and inputs\n" );
 	printf( "---------------------------------------------------------------------\n" );
@@ -232,8 +233,8 @@ void* swmain(void* param) {
 		exit(1);
 	}
 
-	float inputScale = 1.0f / getInputInverseScale();
-	int quantizedMagnitudeMax = getTestQuantizedMagnitudeMax();
+	float inputScale = 1.0f / getInputInverseScale(quantizedWidth);
+	int quantizedMagnitudeMax = getTestQuantizedMagnitudeMax(quantizedWidth);
 
 	for ( int i = 0; i < INPUT_DIM * OUTPUT_DIM; i ++ ) {
 		weights[i] = 0.0f;
@@ -256,18 +257,21 @@ void* swmain(void* param) {
 	}
 
 	printf( "---------------------------------------------------------------------\n" );
-	printf( "[STEP 2] Calculating Float and INT%d golden results\n", QUANTIZED_WIDTH );
+	printf( "[STEP 2] Calculating Float and INT%d golden results\n", quantizedWidth );
 	printf( "---------------------------------------------------------------------\n" );
 	fflush( stdout );
 
 	calculateFloatGolden(weights, inputs, floatGolden);
-	calculateQuantizedGolden(weights, inputs, quantizedGolden);
+	calculateQuantizedGolden(weights, inputs, quantizedGolden, quantizedWidth);
 
 	printf( "---------------------------------------------------------------------\n" );
-	printf( "[STEP 3] Running the INT%d FPGA fully connected layer\n", QUANTIZED_WIDTH );
+	printf( "[STEP 3] Sending runtime INT%d width and running the FPGA FC layer\n",
+		quantizedWidth
+	);
 	printf( "---------------------------------------------------------------------\n" );
 	fflush( stdout );
 
+	sendQuantizedWidth(quantizedWidth);
 	nnFc(weights, inputs, INPUT_CNT, INPUT_DIM, OUTPUT_DIM, answer);
 
 	printf( "---------------------------------------------------------------------\n" );
@@ -307,9 +311,11 @@ void* swmain(void* param) {
 	}
 
 	int resultCnt = INPUT_CNT * OUTPUT_DIM;
-	printf( "Quantized Width              : INT%d\n", QUANTIZED_WIDTH );
-	printf( "Input/Weight Scale           : %.10f\n", 1.0f / getInputInverseScale() );
-	printf( "Output Scale                 : %.10f\n", getOutputScale() );
+	printf( "Quantized Width              : INT%d\n", quantizedWidth );
+	printf( "Input/Weight Scale           : %.10f\n",
+		1.0f / getInputInverseScale(quantizedWidth)
+	);
+	printf( "Output Scale                 : %.10f\n", getOutputScale(quantizedWidth) );
 	printf( "FPGA Mismatch Count          : %d\n", mismatchCnt );
 	printf( "FPGA Average Difference      : %.10f\n", hardwareDiffSum / resultCnt );
 	printf( "FPGA Maximum Difference      : %.10f\n", hardwareDiffMax );
@@ -333,6 +339,13 @@ int main(int argc, char** argv) {
 	char defaultTty[] = "/dev/ttyUSB0";
 	char* ttyPath = defaultTty;
 	if ( argc > 1 ) ttyPath = argv[1];
+	if ( argc > 2 ) quantizedWidth = atoi(argv[2]);
+
+	if ( !isValidQuantizedWidth(quantizedWidth) ) {
+		printf( "Quantized width must be 4, 8, or 16.\n" );
+		fflush( stdout );
+		return 1;
+	}
 
 	int ret = open_tty(ttyPath);
 	if ( ret != 0 ) return ret;
