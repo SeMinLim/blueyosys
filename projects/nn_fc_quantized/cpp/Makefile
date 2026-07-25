@@ -1,9 +1,8 @@
 ROOTDIR := ../../..
 COMMON_CPP_DIR := $(ROOTDIR)/lib/cpp
-QUANTIZED_WIDTH ?= 8
 
 CXX ?= g++
-CPPFLAGS += -I$(COMMON_CPP_DIR) -DQUANTIZED_WIDTH=$(QUANTIZED_WIDTH)
+CPPFLAGS += -I$(COMMON_CPP_DIR)
 CXXFLAGS ?= -Wall -Wextra -Wpedantic
 LDLIBS += -pthread
 
