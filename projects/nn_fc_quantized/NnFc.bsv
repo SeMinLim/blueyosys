@@ -6,16 +6,8 @@ import FloatingPoint::*;
 import QuantizedMath::*;
 
 
-`ifdef NN_FC_QINT4
-typedef QInt4 QuantizedValue;
-typedef QInt4Accumulator QuantizedAccumulator;
-`elsif NN_FC_QINT16
 typedef QInt16 QuantizedValue;
 typedef QInt16Accumulator QuantizedAccumulator;
-`else
-typedef QInt8 QuantizedValue;
-typedef QInt8Accumulator QuantizedAccumulator;
-`endif
 
 typedef 4 PeWaysLog;
 typedef TExp#(PeWaysLog) PeWays;
@@ -24,73 +16,101 @@ typedef 64 OutputDim;
 typedef 8 QuantizedMetadataQueueDepth;
 
 
-function Float getQuantizationInverseScale();
-`ifdef NN_FC_QINT4
-	return 0.5;
-`elsif NN_FC_QINT16
-	return 1024.0;
-`else
-	return 8.0;
-`endif
+function Bool isSupportedQuantizedWidth(Bit#(5) width);
+	return width == 4 || width == 8 || width == 16;
 endfunction
 
-function Float getOutputScale();
-`ifdef NN_FC_QINT4
-	return 512.0;
-`elsif NN_FC_QINT16
-	return 0.25;
-`else
-	return 32.0;
-`endif
+function Float getQuantizationInverseScale(Bit#(5) width);
+	if ( width == 4 ) begin
+		return 0.5;
+	end else if ( width == 16 ) begin
+		return 1024.0;
+	end else begin
+		return 8.0;
+	end
 endfunction
 
-function QuantizedValue requantizeAccumulator(QuantizedAccumulator accumulator);
-`ifdef NN_FC_QINT4
-	return requantizeInt4(accumulator, 1, 7, 0);
-`elsif NN_FC_QINT16
-	return requantizeInt16(accumulator, 1, 18, 0);
-`else
-	return requantizeInt8(accumulator, 1, 11, 0);
-`endif
+function Float getOutputScale(Bit#(5) width);
+	if ( width == 4 ) begin
+		return 512.0;
+	end else if ( width == 16 ) begin
+		return 0.25;
+	end else begin
+		return 32.0;
+	end
+endfunction
+
+function QuantizedValue saturateQuantizedValue(
+	QuantizedValue value,
+	Bit#(5) width
+);
+	Int#(96) valueExt = signExtend(value);
+
+	if ( width == 4 ) begin
+		return signExtend(saturateToInt4(valueExt));
+	end else if ( width == 8 ) begin
+		return signExtend(saturateToInt8(valueExt));
+	end else begin
+		return saturateToInt16(valueExt);
+	end
+endfunction
+
+function QuantizedValue requantizeAccumulator(
+	QuantizedAccumulator accumulator,
+	Bit#(5) width
+);
+	if ( width == 4 ) begin
+		QInt4Accumulator accumulatorInt4 = truncate(accumulator);
+		return signExtend(requantizeInt4(accumulatorInt4, 1, 7, 0));
+	end else if ( width == 8 ) begin
+		QInt8Accumulator accumulatorInt8 = truncate(accumulator);
+		return signExtend(requantizeInt8(accumulatorInt8, 1, 11, 0));
+	end else begin
+		return requantizeInt16(accumulator, 1, 18, 0);
+	end
 endfunction
 
 
 interface MacPeIfc;
-	method Action putInput(QuantizedValue value, Bit#(8) inputIdx);
+	method Action putInput(
+		QuantizedValue value,
+		Bit#(8) inputIdx,
+		Bit#(5) width
+	);
 	method Action putWeight(QuantizedValue weight);
-	method ActionValue#(Tuple3#(QuantizedValue, Bit#(8), Bit#(8))) resultGet;
+	method ActionValue#(Tuple4#(
+		QuantizedValue,
+		Bit#(8),
+		Bit#(8),
+		Bit#(5)
+	)) resultGet;
 	method Bool resultExist;
 endinterface
 
 module mkMacPe#(Bit#(PeWaysLog) peIdx) (MacPeIfc);
 	FIFO#(QuantizedValue) weightQ <- mkFIFO;
-	FIFO#(Tuple2#(QuantizedValue, Bit#(8))) inputQ <- mkFIFO;
-	FIFOF#(Tuple3#(QuantizedValue, Bit#(8), Bit#(8))) outputQ <- mkFIFOF;
+	FIFO#(Tuple3#(QuantizedValue, Bit#(8), Bit#(5))) inputQ <- mkFIFO;
+	FIFOF#(Tuple4#(QuantizedValue, Bit#(8), Bit#(8), Bit#(5))) outputQ <- mkFIFOF;
 
 	FIFO#(QuantizedAccumulator) partialSumQ <- mkFIFO;
-	FIFO#(Tuple3#(Bit#(8), Bit#(8), Bit#(16))) macMetadataQ <- mkFIFO1;
-
-`ifdef NN_FC_QINT4
-	Int4MacIfc mac <- mkInt4Mac;
-`elsif NN_FC_QINT16
+	FIFO#(Tuple4#(Bit#(8), Bit#(8), Bit#(16), Bit#(5))) macMetadataQ <- mkFIFO1;
 	Int16MacIfc mac <- mkInt16Mac;
-`else
-	Int8MacIfc mac <- mkInt8Mac;
-`endif
 
 	Reg#(Bit#(8)) curOutputIdx <- mkReg(zeroExtend(peIdx));
 	Reg#(Bit#(12)) curMacIdx <- mkReg(0);
 
 	//------------------------------------------------------------------------------------
 	// [STAGE 1]
-	// Issue one signed quantized MAC operation
+	// Issue one signed quantized MAC operation through the common INT16 datapath
 	//------------------------------------------------------------------------------------
 	rule processMac;
 		inputQ.deq;
 		weightQ.deq;
 
-		let inputValue = tpl_1(inputQ.first);
-		let inputIdx = tpl_2(inputQ.first);
+		let inputData = inputQ.first;
+		let inputValue = tpl_1(inputData);
+		let inputIdx = tpl_2(inputData);
+		let width = tpl_3(inputData);
 		let weight = weightQ.first;
 
 		QuantizedAccumulator accumulator = 0;
@@ -100,7 +120,12 @@ module mkMacPe#(Bit#(PeWaysLog) peIdx) (MacPeIfc);
 		end
 
 		mac.put(inputValue, weight, accumulator);
-		macMetadataQ.enq(tuple3(inputIdx, curOutputIdx, zeroExtend(curMacIdx)));
+		macMetadataQ.enq(tuple4(
+			inputIdx,
+			curOutputIdx,
+			zeroExtend(curMacIdx),
+			width
+		));
 
 		if ( curMacIdx + 1 >= fromInteger(valueOf(InputDim)) ) begin
 			curMacIdx <= 0;
@@ -125,22 +150,36 @@ module mkMacPe#(Bit#(PeWaysLog) peIdx) (MacPeIfc);
 		let metadata = macMetadataQ.first;
 
 		if ( tpl_3(metadata) + 1 == fromInteger(valueOf(InputDim)) ) begin
-			let result = requantizeAccumulator(accumulator);
-			outputQ.enq(tuple3(result, tpl_1(metadata), tpl_2(metadata)));
+			let result = requantizeAccumulator(accumulator, tpl_4(metadata));
+			outputQ.enq(tuple4(
+				result,
+				tpl_1(metadata),
+				tpl_2(metadata),
+				tpl_4(metadata)
+			));
 		end else begin
 			partialSumQ.enq(accumulator);
 		end
 	endrule
 
-	method Action putInput(QuantizedValue value, Bit#(8) inputIdx);
-		inputQ.enq(tuple2(value, inputIdx));
+	method Action putInput(
+		QuantizedValue value,
+		Bit#(8) inputIdx,
+		Bit#(5) width
+	);
+		inputQ.enq(tuple3(value, inputIdx, width));
 	endmethod
 
 	method Action putWeight(QuantizedValue weight);
 		weightQ.enq(weight);
 	endmethod
 
-	method ActionValue#(Tuple3#(QuantizedValue, Bit#(8), Bit#(8))) resultGet;
+	method ActionValue#(Tuple4#(
+		QuantizedValue,
+		Bit#(8),
+		Bit#(8),
+		Bit#(5)
+	)) resultGet;
 		outputQ.deq;
 		return outputQ.first;
 	endmethod
@@ -152,6 +191,7 @@ endmodule
 
 
 interface NnFcIfc;
+	method Action setWidth(Bit#(5) width);
 	method Action dataIn(Float value, Bit#(8) inputIdx);
 	method Action weightIn(Float weight);
 	method ActionValue#(Tuple3#(Float, Bit#(8), Bit#(8))) dataOut;
@@ -161,25 +201,24 @@ endinterface
 module mkNnFc(NnFcIfc);
 	Vector#(PeWays, MacPeIfc) pes;
 	Vector#(PeWays, FIFO#(QuantizedValue)) weightInQs <- replicateM(mkFIFO1);
-	Vector#(PeWays, FIFO#(Tuple2#(QuantizedValue, Bit#(8)))) dataInQs <- replicateM(mkFIFO1);
-	Vector#(PeWays, FIFO#(Tuple3#(QuantizedValue, Bit#(8), Bit#(8)))) resultOutQs <-
+	Vector#(PeWays, FIFO#(Tuple3#(QuantizedValue, Bit#(8), Bit#(5)))) dataInQs <-
 		replicateM(mkFIFO1);
+	Vector#(PeWays, FIFO#(Tuple4#(
+		QuantizedValue,
+		Bit#(8),
+		Bit#(8),
+		Bit#(5)
+	))) resultOutQs <- replicateM(mkFIFO1);
 
-`ifdef NN_FC_QINT4
-	FloatToInt4Ifc inputQuantizer <- mkFloatToInt4;
-	FloatToInt4Ifc weightQuantizer <- mkFloatToInt4;
-	Int4ToFloatIfc outputDequantizer <- mkInt4ToFloat;
-`elsif NN_FC_QINT16
+	Reg#(Bit#(5)) quantizedWidth <- mkReg(8);
+
 	FloatToInt16Ifc inputQuantizer <- mkFloatToInt16;
 	FloatToInt16Ifc weightQuantizer <- mkFloatToInt16;
 	Int16ToFloatIfc outputDequantizer <- mkInt16ToFloat;
-`else
-	FloatToInt8Ifc inputQuantizer <- mkFloatToInt8;
-	FloatToInt8Ifc weightQuantizer <- mkFloatToInt8;
-	Int8ToFloatIfc outputDequantizer <- mkInt8ToFloat;
-`endif
 
-	FIFO#(Bit#(8)) inputMetadataQ <-
+	FIFO#(Tuple2#(Bit#(8), Bit#(5))) inputMetadataQ <-
+		mkSizedFIFO(valueOf(QuantizedMetadataQueueDepth));
+	FIFO#(Bit#(5)) weightMetadataQ <-
 		mkSizedFIFO(valueOf(QuantizedMetadataQueueDepth));
 	FIFO#(Tuple2#(Bit#(8), Bit#(8))) outputMetadataQ <-
 		mkSizedFIFO(valueOf(QuantizedMetadataQueueDepth));
@@ -187,17 +226,21 @@ module mkNnFc(NnFcIfc);
 
 	//------------------------------------------------------------------------------------
 	// [STAGE 1]
-	// Quantize each input and weight once before PE distribution
+	// Quantize each input and weight according to the Host-selected runtime width
 	//------------------------------------------------------------------------------------
 	rule relayQuantizedInput;
-		let value <- inputQuantizer.get;
+		let rawValue <- inputQuantizer.get;
 		inputMetadataQ.deq;
-		dataInQs[0].enq(tuple2(value, inputMetadataQ.first));
+		let metadata = inputMetadataQ.first;
+		let value = saturateQuantizedValue(rawValue, tpl_2(metadata));
+		dataInQs[0].enq(tuple3(value, tpl_1(metadata), tpl_2(metadata)));
 	endrule
 
 	rule relayQuantizedWeight;
-		let weight <- weightQuantizer.get;
-		weightInQs[0].enq(weight);
+		let rawWeight <- weightQuantizer.get;
+		weightMetadataQ.deq;
+		let width = weightMetadataQ.first;
+		weightInQs[0].enq(saturateQuantizedValue(rawWeight, width));
 	endrule
 
 	//------------------------------------------------------------------------------------
@@ -231,7 +274,7 @@ module mkNnFc(NnFcIfc);
 			if ( i < valueOf(PeWays) - 1 ) begin
 				dataInQs[i + 1].enq(data);
 			end
-			pes[i].putInput(tpl_1(data), tpl_2(data));
+			pes[i].putInput(tpl_1(data), tpl_2(data), tpl_3(data));
 		endrule
 
 		rule forwardResult;
@@ -252,7 +295,7 @@ module mkNnFc(NnFcIfc);
 	rule startOutputDequantization;
 		resultOutQs[0].deq;
 		let data = resultOutQs[0].first;
-		outputDequantizer.put(tpl_1(data), getOutputScale(), 0);
+		outputDequantizer.put(tpl_1(data), getOutputScale(tpl_4(data)), 0);
 		outputMetadataQ.enq(tuple2(tpl_2(data), tpl_3(data)));
 	endrule
 
@@ -263,13 +306,22 @@ module mkNnFc(NnFcIfc);
 		outputQ.enq(tuple3(value, tpl_1(metadata), tpl_2(metadata)));
 	endrule
 
+	method Action setWidth(Bit#(5) width);
+		if ( isSupportedQuantizedWidth(width) ) begin
+			quantizedWidth <= width;
+		end
+	endmethod
+
 	method Action dataIn(Float value, Bit#(8) inputIdx);
-		inputQuantizer.put(value, getQuantizationInverseScale(), 0);
-		inputMetadataQ.enq(inputIdx);
+		let width = quantizedWidth;
+		inputQuantizer.put(value, getQuantizationInverseScale(width), 0);
+		inputMetadataQ.enq(tuple2(inputIdx, width));
 	endmethod
 
 	method Action weightIn(Float weight);
-		weightQuantizer.put(weight, getQuantizationInverseScale(), 0);
+		let width = quantizedWidth;
+		weightQuantizer.put(weight, getQuantizationInverseScale(width), 0);
+		weightMetadataQ.enq(width);
 	endmethod
 
 	method ActionValue#(Tuple3#(Float, Bit#(8), Bit#(8))) dataOut;
