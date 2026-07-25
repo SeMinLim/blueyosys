@@ -22,4 +22,4 @@ make synth PROJECT=nn_fc_quantized BOARD=ulx3s-85f QUANTIZED_WIDTH=8
 make host PROJECT=nn_fc_quantized QUANTIZED_WIDTH=8
 ```
 
-Hardware and Host software must use the same `QUANTIZED_WIDTH`. The Host compares FPGA output against an integer quantized golden model and separately reports the error relative to the original floating-point fully connected layer.
+Hardware and Host software must use the same `QUANTIZED_WIDTH`. The Host generates deterministic signed values aligned to the selected input scale, compares FPGA output against an integer quantized golden model, and separately reports the error relative to the floating-point fully connected layer.
