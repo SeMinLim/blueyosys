@@ -23,6 +23,8 @@ blueyosys/
 
 `fpga/ecp5/` contains the current ECP5 arithmetic backend, `lib/rtl/bsc/` contains the common Bluespec runtime RTL, and `fpga/ice40/` is reserved for the future ICE40 backend.
 
+`lib/bsv/QuantizedMath.bsv` provides reusable signed INT4, INT8, and INT16 multiply/MAC pipelines, wide accumulators, saturating arithmetic, rounded shifts, requantization, and Float conversion.
+
 ## Prerequisites & Dependencies
 * **Platform and hardware:** Linux is recommended. `BOARD=ulx3s-85f` is currently build-ready for the Lattice ECP5-based ULX3S-85F.
 * **HDL and FPGA tools:** Install Bluespec Compiler (`bsc`) and Bluesim separately. OSS CAD Suite provides Yosys, `nextpnr-ecp5`, Project Trellis `ecppack`, and common programming tools such as `openFPGALoader`. `ujprog` is the default programmer and can be replaced through `PROGRAMMER` and `PROGRAMMER_FLAGS`.
