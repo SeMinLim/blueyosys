@@ -1,4 +1,3 @@
-import Clocks::*;
 import FIFO::*;
 
 import Sdram::*;
@@ -22,6 +21,7 @@ module mkHwMain#(Ulx3sSdramUserIfc mem) (HwMainIfc);
 
 	NnFcIfc nn <- mkNnFc;
 
+	Reg#(Bool) widthConfigured <- mkReg(False);
 	Reg#(Maybe#(Bit#(8))) inputDst <- mkReg(tagged Invalid);
 	Reg#(Bit#(32)) inputBuffer <- mkReg(0);
 	Reg#(Bit#(2)) inputBufferCnt <- mkReg(0);
@@ -30,15 +30,32 @@ module mkHwMain#(Ulx3sSdramUserIfc mem) (HwMainIfc);
 
 	//------------------------------------------------------------------------------------
 	// [STAGE 1]
+	// Receive the runtime quantized width before the original nn_fc UART stream
+	//------------------------------------------------------------------------------------
+	rule receiveQuantizedWidth ( !widthConfigured );
+		let width = serialRxQ.first;
+		serialRxQ.deq;
+
+		if ( width == 4 || width == 8 || width == 16 ) begin
+			nn.setWidth(truncate(width));
+			widthConfigured <= True;
+			$write( "Configured runtime INT%d FC datapath\n", width );
+		end else begin
+			$write( "Unsupported quantized width %d\n", width );
+		end
+	endrule
+
+	//------------------------------------------------------------------------------------
+	// [STAGE 2]
 	// Receive the original nn_fc UART stream of Float weights and inputs
 	//------------------------------------------------------------------------------------
-	rule receiveInputDst ( !isValid(inputDst) );
+	rule receiveInputDst ( widthConfigured && !isValid(inputDst) );
 		let data = serialRxQ.first;
 		serialRxQ.deq;
 		inputDst <= tagged Valid data;
 	endrule
 
-	rule receiveInputFloat ( isValid(inputDst) );
+	rule receiveInputFloat ( widthConfigured && isValid(inputDst) );
 		let data = serialRxQ.first;
 		serialRxQ.deq;
 
@@ -62,7 +79,7 @@ module mkHwMain#(Ulx3sSdramUserIfc mem) (HwMainIfc);
 	endrule
 
 	//------------------------------------------------------------------------------------
-	// [STAGE 2]
+	// [STAGE 3]
 	// Store Float weights in SDRAM and stream them back to the quantized FC core
 	//------------------------------------------------------------------------------------
 	Reg#(Maybe#(Bit#(16))) memWriteBuffer <- mkReg(tagged Invalid);
@@ -104,7 +121,7 @@ module mkHwMain#(Ulx3sSdramUserIfc mem) (HwMainIfc);
 	endrule
 
 	//------------------------------------------------------------------------------------
-	// [STAGE 3]
+	// [STAGE 4]
 	// Preserve the nn_fc result format: input index, output index, and Float value
 	//------------------------------------------------------------------------------------
 	Reg#(Bit#(40)) outputBuffer <- mkReg(0);
