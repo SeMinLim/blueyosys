@@ -23,12 +23,6 @@ typedef union FloatBit8 {
 	uint8_t bytes[4];
 } FloatBit8;
 
-typedef union FloatBit32 {
-	float value;
-	uint32_t bits;
-} FloatBit32;
-
-
 float getInputInverseScale() {
 #if QUANTIZED_WIDTH == 4
 	return 0.5f;
@@ -76,17 +70,18 @@ int32_t saturateQuantized(int64_t value) {
 	return (int32_t)value;
 }
 
-int32_t quantizeValue(float value) {
-	// SimpleFloat keeps the upper 17 fraction bits for this power-of-two scale
-	// multiplication, so the C golden model clears the same six LSBs first.
-	FloatBit32 simpleValue;
-	simpleValue.value = value;
-	if ( (simpleValue.bits & 0x7f800000u) != 0 ) {
-		simpleValue.bits &= 0xffffffc0u;
-	}
+int getTestQuantizedMagnitudeMax() {
+#if QUANTIZED_WIDTH == 4
+	return 5;
+#elif QUANTIZED_WIDTH == 16
+	return 10240;
+#else
+	return 80;
+#endif
+}
 
-	double scaledValue =
-		(double)simpleValue.value * (double)getInputInverseScale();
+int32_t quantizeValue(float value) {
+	double scaledValue = (double)value * (double)getInputInverseScale();
 	int64_t roundedValue = (int64_t)llround(scaledValue);
 	return saturateQuantized(roundedValue);
 }
@@ -237,18 +232,23 @@ void* swmain(void* param) {
 		exit(1);
 	}
 
+	float inputScale = 1.0f / getInputInverseScale();
+	int quantizedMagnitudeMax = getTestQuantizedMagnitudeMax();
+
 	for ( int i = 0; i < INPUT_DIM * OUTPUT_DIM; i ++ ) {
 		weights[i] = 0.0f;
 		if ( rand() % 4 == 0 ) {
-			float magnitude = (float)(rand() % 10000) / 1000.0f;
-			weights[i] = (rand() & 1) ? magnitude : -magnitude;
+			int quantizedValue =
+				(rand() % (2 * quantizedMagnitudeMax + 1)) - quantizedMagnitudeMax;
+			weights[i] = (float)quantizedValue * inputScale;
 		}
 	}
 	for ( int i = 0; i < INPUT_DIM * INPUT_CNT; i ++ ) {
 		inputs[i] = 0.0f;
 		if ( rand() % 4 == 0 ) {
-			float magnitude = (float)(rand() % 10000) / 1000.0f;
-			inputs[i] = (rand() & 1) ? magnitude : -magnitude;
+			int quantizedValue =
+				(rand() % (2 * quantizedMagnitudeMax + 1)) - quantizedMagnitudeMax;
+			inputs[i] = (float)quantizedValue * inputScale;
 		}
 	}
 	for ( int i = 0; i < OUTPUT_DIM * INPUT_CNT; i ++ ) {
