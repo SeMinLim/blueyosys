@@ -1,4 +1,4 @@
-PROJECTS := basic matmul nn_fc nn_fc_accel nn_fc_zfpe
+PROJECTS := basic matmul nn_fc nn_fc_quantized nn_fc_accel nn_fc_zfpe
 PROJECT ?= basic
 BOARD ?= ulx3s-85f
 
