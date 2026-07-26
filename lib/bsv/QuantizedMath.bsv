@@ -367,7 +367,7 @@ function Int#(32) roundFloatToInt32(Float value);
 endfunction
 
 function Float int32ToFloat(Int#(32) value);
-	FP32 valueFP = fromInt32(value);
+	FloatingPoint#(8, 23) valueFP = fromInt32(value);
 	Float result = fromFP(valueFP);
 	return result;
 endfunction
