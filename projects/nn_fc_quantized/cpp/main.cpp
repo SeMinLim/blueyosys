@@ -12,10 +12,10 @@
 #define INPUT_DIM 1024
 #define OUTPUT_DIM 64
 #define RESULT_TOLERANCE 0.01f
-#define DEFAULT_QUANTIZED_WIDTH 8
 
 
-int quantizedWidth = DEFAULT_QUANTIZED_WIDTH;
+// Select the quantized datapath that the Host sends to the FPGA.
+const int quantizedWidth = 8;
 
 
 typedef union FloatBit8 {
@@ -206,8 +206,6 @@ void* swmain(void* param) {
 	(void)param;
 	srand(1);
 
-	char* widthEnv = getenv("NN_FC_WIDTH");
-	if ( widthEnv != NULL ) quantizedWidth = atoi(widthEnv);
 	if ( !isValidQuantizedWidth(quantizedWidth) ) {
 		printf( "Quantized width must be 4, 8, or 16.\n" );
 		fflush( stdout );
@@ -339,13 +337,6 @@ int main(int argc, char** argv) {
 	char defaultTty[] = "/dev/ttyUSB0";
 	char* ttyPath = defaultTty;
 	if ( argc > 1 ) ttyPath = argv[1];
-	if ( argc > 2 ) quantizedWidth = atoi(argv[2]);
-
-	if ( !isValidQuantizedWidth(quantizedWidth) ) {
-		printf( "Quantized width must be 4, 8, or 16.\n" );
-		fflush( stdout );
-		return 1;
-	}
 
 	int ret = open_tty(ttyPath);
 	if ( ret != 0 ) return ret;
