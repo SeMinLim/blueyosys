@@ -337,9 +337,7 @@ void* swmain(void* param) {
 	fflush( stdout );
 
 	int mismatchCnt = 0;
-	double hardwareDiffSum = 0.0;
 	double quantizationDiffSum = 0.0;
-	float hardwareDiffMax = 0.0f;
 	float quantizationDiffMax = 0.0f;
 	float outputScale = getOutputScale(quantizedWidth);
 
@@ -362,11 +360,9 @@ void* swmain(void* param) {
 			mismatchCnt ++;
 		}
 
-		if ( hardwareDiff > hardwareDiffMax ) hardwareDiffMax = hardwareDiff;
 		if ( quantizationDiff > quantizationDiffMax ) {
 			quantizationDiffMax = quantizationDiff;
 		}
-		hardwareDiffSum += hardwareDiff;
 		quantizationDiffSum += quantizationDiff;
 	}
 
@@ -380,32 +376,23 @@ void* swmain(void* param) {
 		(double)(floatWeightBytes + floatInputBytes) /
 		(double)(packedWeightBytes + packedInputBytes);
 	double uartReduction = (double)floatUartBytes / (double)packedUartBytes;
-	int64_t scalarMacCnt = (int64_t)INPUT_CNT * OUTPUT_DIM * INPUT_DIM;
-	int64_t packedOperationCnt = scalarMacCnt / laneCnt;
 
-	printf( "Quantized Width              : INT%d\n", quantizedWidth );
-	printf( "Packed Lanes per Word        : %d\n", laneCnt );
-	printf( "Input Groups per Vector      : %d\n", groupCnt );
-	printf( "Equivalent Scalar MACs       : %ld\n", (long)scalarMacCnt );
-	printf( "Packed Operations            : %ld\n", (long)packedOperationCnt );
-	printf( "FP32 Weight Payload          : %zu bytes\n", floatWeightBytes );
-	printf( "Packed Weight Payload        : %zu bytes\n", packedWeightBytes );
-	printf( "FP32 Input Payload           : %zu bytes\n", floatInputBytes );
-	printf( "Packed Input Payload         : %zu bytes\n", packedInputBytes );
-	printf( "Payload Reduction            : %.2fx\n", payloadReduction );
-	printf( "FP32 UART Transfer           : %zu bytes\n", floatUartBytes );
-	printf( "Packed UART Transfer         : %zu bytes\n", packedUartBytes );
-	printf( "UART Transfer Reduction      : %.2fx\n", uartReduction );
-	printf( "Input/Weight Scale           : %.10f\n",
-		1.0f / getInputInverseScale(quantizedWidth)
+	printf( "Quantized Configuration : INT%d, %d lanes/word\n",
+		quantizedWidth,
+		laneCnt
 	);
-	printf( "Output Scale                 : %.10f\n", outputScale );
-	printf( "FPGA Mismatch Count          : %d\n", mismatchCnt );
-	printf( "FPGA Average Difference      : %.10f\n", hardwareDiffSum / resultCnt );
-	printf( "FPGA Maximum Difference      : %.10f\n", hardwareDiffMax );
-	printf( "Quantization Average Error   : %.10f\n", quantizationDiffSum / resultCnt );
-	printf( "Quantization Maximum Error   : %.10f\n", quantizationDiffMax );
-	printf( "Result                       : %s\n", mismatchCnt == 0 ? "PASS" : "FAIL" );
+	printf( "Data Reduction          : Payload %.2fx, UART %.2fx\n",
+		payloadReduction,
+		uartReduction
+	);
+	printf( "FPGA Verification       : %s (%d mismatches)\n",
+		mismatchCnt == 0 ? "PASS" : "FAIL",
+		mismatchCnt
+	);
+	printf( "Quantization Error      : Average %.6f, Maximum %.6f\n",
+		quantizationDiffSum / resultCnt,
+		quantizationDiffMax
+	);
 	printf( "---------------------------------------------------------------------\n" );
 	fflush( stdout );
 
