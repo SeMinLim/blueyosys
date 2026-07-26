@@ -179,8 +179,12 @@ void* swmain(void* param) {
 	return NULL;
 }
 
-int main() {
-	int ret = open_tty((char*)"/dev/ttyUSB0");
+int main(int argc, char** argv) {
+	char defaultTty[] = "/dev/ttyUSB0";
+	char* ttyPath = defaultTty;
+	if ( argc > 1 ) ttyPath = argv[1];
+
+	int ret = open_tty(ttyPath);
 	if ( ret != 0 ) return ret;
 
 	swmain(NULL);
