@@ -11,20 +11,27 @@
 #define INPUT_CNT 64
 #define INPUT_DIM 1024
 #define OUTPUT_DIM 64
-#define RESULT_TOLERANCE 0.01f
 
 
 // Select the quantized datapath that the Host sends to the FPGA.
 const int quantizedWidth = 8;
 
 
-typedef union FloatBit8 {
-	float value;
+typedef union IntBit8 {
+	int32_t value;
 	uint8_t bytes[4];
-} FloatBit8;
+} IntBit8;
 
 bool isValidQuantizedWidth(int width) {
 	return width == 4 || width == 8 || width == 16;
+}
+
+int getLaneCnt(int width) {
+	return 16 / width;
+}
+
+int getGroupCnt(int width) {
+	return INPUT_DIM / getLaneCnt(width);
 }
 
 float getInputInverseScale(int width) {
@@ -62,12 +69,6 @@ int32_t saturateQuantized(int64_t value, int width) {
 	return (int32_t)value;
 }
 
-int getTestQuantizedMagnitudeMax(int width) {
-	if ( width == 4 ) return 5;
-	if ( width == 16 ) return 10240;
-	return 80;
-}
-
 int32_t quantizeValue(float value, int width) {
 	double scaledValue = (double)value * (double)getInputInverseScale(width);
 	int64_t roundedValue = (int64_t)llround(scaledValue);
@@ -92,9 +93,77 @@ int32_t requantizeAccumulator(int64_t accumulator, int width) {
 	return saturateQuantized(roundedValue, width);
 }
 
+uint16_t packQuantizedWord(const int32_t* values, int baseIdx, int width) {
+	int laneCnt = getLaneCnt(width);
+	uint32_t laneMask = ((uint32_t)1 << width) - 1;
+	uint16_t packedWord = 0;
+
+	for ( int i = 0; i < laneCnt; i ++ ) {
+		uint16_t lane = (uint16_t)((uint32_t)values[baseIdx + i] & laneMask);
+		packedWord |= (uint16_t)(lane << (i * width));
+	}
+
+	return packedWord;
+}
+
+void quantizeValues(
+	const float* values,
+	int32_t* quantizedValues,
+	int valueCnt,
+	int width
+) {
+	for ( int i = 0; i < valueCnt; i ++ ) {
+		quantizedValues[i] = quantizeValue(values[i], width);
+	}
+}
+
+void packWeights(
+	const int32_t* quantizedWeights,
+	uint16_t* packedWeights,
+	int width
+) {
+	int laneCnt = getLaneCnt(width);
+	int groupCnt = getGroupCnt(width);
+
+	// Group-major layout: weightPack[groupIdx][outputIdx]
+	for ( int i = 0; i < groupCnt; i ++ ) {
+		for ( int j = 0; j < OUTPUT_DIM; j ++ ) {
+			int sourceIdx = j * INPUT_DIM + i * laneCnt;
+			int targetIdx = i * OUTPUT_DIM + j;
+			packedWeights[targetIdx] = packQuantizedWord(
+				quantizedWeights,
+				sourceIdx,
+				width
+			);
+		}
+	}
+}
+
+void packInputs(
+	const int32_t* quantizedInputs,
+	uint16_t* packedInputs,
+	int width
+) {
+	int laneCnt = getLaneCnt(width);
+	int groupCnt = getGroupCnt(width);
+
+	// Input-major layout: inputPack[inputIdx][groupIdx]
+	for ( int i = 0; i < INPUT_CNT; i ++ ) {
+		for ( int j = 0; j < groupCnt; j ++ ) {
+			int sourceIdx = i * INPUT_DIM + j * laneCnt;
+			int targetIdx = i * groupCnt + j;
+			packedInputs[targetIdx] = packQuantizedWord(
+				quantizedInputs,
+				sourceIdx,
+				width
+			);
+		}
+	}
+}
+
 void calculateFloatGolden(
-	float* weights,
-	float* inputs,
+	const float* weights,
+	const float* inputs,
 	float* answer
 ) {
 	for ( int i = 0; i < INPUT_CNT; i ++ ) {
@@ -109,29 +178,11 @@ void calculateFloatGolden(
 }
 
 void calculateQuantizedGolden(
-	float* weights,
-	float* inputs,
-	float* answer,
+	const int32_t* quantizedWeights,
+	const int32_t* quantizedInputs,
+	int32_t* answer,
 	int width
 ) {
-	int32_t* quantizedWeights =
-		(int32_t*)malloc(sizeof(int32_t) * INPUT_DIM * OUTPUT_DIM);
-	int32_t* quantizedInputs =
-		(int32_t*)malloc(sizeof(int32_t) * INPUT_DIM * INPUT_CNT);
-
-	if ( quantizedWeights == NULL || quantizedInputs == NULL ) {
-		printf( "Failed to allocate quantized golden buffers.\n" );
-		fflush( stdout );
-		exit(1);
-	}
-
-	for ( int i = 0; i < INPUT_DIM * OUTPUT_DIM; i ++ ) {
-		quantizedWeights[i] = quantizeValue(weights[i], width);
-	}
-	for ( int i = 0; i < INPUT_DIM * INPUT_CNT; i ++ ) {
-		quantizedInputs[i] = quantizeValue(inputs[i], width);
-	}
-
 	for ( int i = 0; i < INPUT_CNT; i ++ ) {
 		for ( int j = 0; j < OUTPUT_DIM; j ++ ) {
 			int64_t accumulator = 0;
@@ -140,44 +191,30 @@ void calculateQuantizedGolden(
 					(int64_t)quantizedWeights[j * INPUT_DIM + k] *
 					(int64_t)quantizedInputs[i * INPUT_DIM + k];
 			}
-
-			int32_t quantizedOutput = requantizeAccumulator(accumulator, width);
-			answer[i * OUTPUT_DIM + j] =
-				(float)quantizedOutput * getOutputScale(width);
+			answer[i * OUTPUT_DIM + j] = requantizeAccumulator(accumulator, width);
 		}
 	}
-
-	free(quantizedWeights);
-	free(quantizedInputs);
 }
 
 void sendQuantizedWidth(int width) {
 	uart_send((uint8_t)width);
 }
 
-void sendWeight(float data) {
+void sendWeight(uint16_t data) {
 	uart_send(0xff);
-
-	FloatBit8 value;
-	value.value = data;
-	for ( int i = 0; i < 4; i ++ ) {
-		uart_send(value.bytes[i]);
-	}
+	uart_send((uint8_t)(data & 0xff));
+	uart_send((uint8_t)(data >> 8));
 }
 
-void sendInput(float data, int inputIdx) {
+void sendInput(uint16_t data, int inputIdx) {
 	uart_send((uint8_t)(inputIdx & 0xff));
-
-	FloatBit8 value;
-	value.value = data;
-	for ( int i = 0; i < 4; i ++ ) {
-		uart_send(value.bytes[i]);
-	}
+	uart_send((uint8_t)(data & 0xff));
+	uart_send((uint8_t)(data >> 8));
 }
 
 FcResult receiveResult() {
 	FcResult result;
-	result.value = 0.0f;
+	result.value = 0;
 	result.inputIdx = 0;
 	result.outputIdx = 0;
 	result.valid = false;
@@ -191,7 +228,7 @@ FcResult receiveResult() {
 	while ( data > 0xff ) data = uart_recv();
 	result.outputIdx = (int)data;
 
-	FloatBit8 value;
+	IntBit8 value;
 	for ( int i = 0; i < 4; i ++ ) {
 		data = uart_recv();
 		while ( data > 0xff ) data = uart_recv();
@@ -212,65 +249,87 @@ void* swmain(void* param) {
 		exit(1);
 	}
 
+	int laneCnt = getLaneCnt(quantizedWidth);
+	int groupCnt = getGroupCnt(quantizedWidth);
+	int weightValueCnt = INPUT_DIM * OUTPUT_DIM;
+	int inputValueCnt = INPUT_DIM * INPUT_CNT;
+	int resultCnt = INPUT_CNT * OUTPUT_DIM;
+	int weightWordCnt = groupCnt * OUTPUT_DIM;
+	int inputWordCnt = groupCnt * INPUT_CNT;
+
 	printf( "---------------------------------------------------------------------\n" );
 	printf( "[STEP 1] Generating signed FC weights and inputs\n" );
 	printf( "---------------------------------------------------------------------\n" );
 	fflush( stdout );
 
-	float* weights = (float*)malloc(sizeof(float) * INPUT_DIM * OUTPUT_DIM);
-	float* inputs = (float*)malloc(sizeof(float) * INPUT_DIM * INPUT_CNT);
-	float* answer = (float*)malloc(sizeof(float) * OUTPUT_DIM * INPUT_CNT);
-	float* quantizedGolden =
-		(float*)malloc(sizeof(float) * OUTPUT_DIM * INPUT_CNT);
-	float* floatGolden = (float*)malloc(sizeof(float) * OUTPUT_DIM * INPUT_CNT);
+	float* weights = (float*)malloc(sizeof(float) * weightValueCnt);
+	float* inputs = (float*)malloc(sizeof(float) * inputValueCnt);
+	float* floatGolden = (float*)malloc(sizeof(float) * resultCnt);
+	int32_t* quantizedWeights = (int32_t*)malloc(sizeof(int32_t) * weightValueCnt);
+	int32_t* quantizedInputs = (int32_t*)malloc(sizeof(int32_t) * inputValueCnt);
+	int32_t* quantizedGolden = (int32_t*)malloc(sizeof(int32_t) * resultCnt);
+	int32_t* hardwareResult = (int32_t*)malloc(sizeof(int32_t) * resultCnt);
+	uint16_t* packedWeights = (uint16_t*)malloc(sizeof(uint16_t) * weightWordCnt);
+	uint16_t* packedInputs = (uint16_t*)malloc(sizeof(uint16_t) * inputWordCnt);
 
-	if ( weights == NULL || inputs == NULL || answer == NULL ||
-	     quantizedGolden == NULL || floatGolden == NULL ) {
+	if ( weights == NULL || inputs == NULL || floatGolden == NULL ||
+	     quantizedWeights == NULL || quantizedInputs == NULL ||
+	     quantizedGolden == NULL || hardwareResult == NULL ||
+	     packedWeights == NULL || packedInputs == NULL ) {
 		printf( "Failed to allocate FC test buffers.\n" );
 		fflush( stdout );
 		exit(1);
 	}
 
-	float inputScale = 1.0f / getInputInverseScale(quantizedWidth);
-	int quantizedMagnitudeMax = getTestQuantizedMagnitudeMax(quantizedWidth);
-
-	for ( int i = 0; i < INPUT_DIM * OUTPUT_DIM; i ++ ) {
+	for ( int i = 0; i < weightValueCnt; i ++ ) {
 		weights[i] = 0.0f;
 		if ( rand() % 4 == 0 ) {
-			int quantizedValue =
-				(rand() % (2 * quantizedMagnitudeMax + 1)) - quantizedMagnitudeMax;
-			weights[i] = (float)quantizedValue * inputScale;
+			weights[i] = (float)((rand() % 20001) - 10000) / 1000.0f;
 		}
 	}
-	for ( int i = 0; i < INPUT_DIM * INPUT_CNT; i ++ ) {
+	for ( int i = 0; i < inputValueCnt; i ++ ) {
 		inputs[i] = 0.0f;
 		if ( rand() % 4 == 0 ) {
-			int quantizedValue =
-				(rand() % (2 * quantizedMagnitudeMax + 1)) - quantizedMagnitudeMax;
-			inputs[i] = (float)quantizedValue * inputScale;
+			inputs[i] = (float)((rand() % 20001) - 10000) / 1000.0f;
 		}
 	}
-	for ( int i = 0; i < OUTPUT_DIM * INPUT_CNT; i ++ ) {
-		answer[i] = 0.0f;
+	for ( int i = 0; i < resultCnt; i ++ ) {
+		hardwareResult[i] = 0;
 	}
 
 	printf( "---------------------------------------------------------------------\n" );
-	printf( "[STEP 2] Calculating Float and INT%d golden results\n", quantizedWidth );
+	printf( "[STEP 2] Quantizing, packing, and calculating golden results\n" );
 	printf( "---------------------------------------------------------------------\n" );
 	fflush( stdout );
 
+	quantizeValues(weights, quantizedWeights, weightValueCnt, quantizedWidth);
+	quantizeValues(inputs, quantizedInputs, inputValueCnt, quantizedWidth);
+	packWeights(quantizedWeights, packedWeights, quantizedWidth);
+	packInputs(quantizedInputs, packedInputs, quantizedWidth);
 	calculateFloatGolden(weights, inputs, floatGolden);
-	calculateQuantizedGolden(weights, inputs, quantizedGolden, quantizedWidth);
+	calculateQuantizedGolden(
+		quantizedWeights,
+		quantizedInputs,
+		quantizedGolden,
+		quantizedWidth
+	);
 
 	printf( "---------------------------------------------------------------------\n" );
-	printf( "[STEP 3] Sending runtime INT%d width and running the FPGA FC layer\n",
+	printf( "[STEP 3] Sending packed INT%d data and running the FPGA FC layer\n",
 		quantizedWidth
 	);
 	printf( "---------------------------------------------------------------------\n" );
 	fflush( stdout );
 
 	sendQuantizedWidth(quantizedWidth);
-	nnFc(weights, inputs, INPUT_CNT, INPUT_DIM, OUTPUT_DIM, answer);
+	nnFc(
+		packedWeights,
+		packedInputs,
+		INPUT_CNT,
+		groupCnt,
+		OUTPUT_DIM,
+		hardwareResult
+	);
 
 	printf( "---------------------------------------------------------------------\n" );
 	printf( "[STEP 4] Comparing FPGA, quantized golden, and Float golden results\n" );
@@ -282,17 +341,20 @@ void* swmain(void* param) {
 	double quantizationDiffSum = 0.0;
 	float hardwareDiffMax = 0.0f;
 	float quantizationDiffMax = 0.0f;
+	float outputScale = getOutputScale(quantizedWidth);
 
-	for ( int i = 0; i < INPUT_CNT * OUTPUT_DIM; i ++ ) {
-		float hardwareDiff = fabsf(answer[i] - quantizedGolden[i]);
-		float quantizationDiff = fabsf(quantizedGolden[i] - floatGolden[i]);
+	for ( int i = 0; i < resultCnt; i ++ ) {
+		float hardwareValue = (float)hardwareResult[i] * outputScale;
+		float quantizedGoldenValue = (float)quantizedGolden[i] * outputScale;
+		float hardwareDiff = fabsf(hardwareValue - quantizedGoldenValue);
+		float quantizationDiff = fabsf(quantizedGoldenValue - floatGolden[i]);
 
-		if ( hardwareDiff > RESULT_TOLERANCE ) {
+		if ( hardwareResult[i] != quantizedGolden[i] ) {
 			if ( mismatchCnt < 16 ) {
 				printf(
-					"Mismatch at %d: FPGA=%f QuantizedGolden=%f Diff=%f\n",
+					"Mismatch at %d: FPGA=%d QuantizedGolden=%d Diff=%f\n",
 					i,
-					answer[i],
+					hardwareResult[i],
 					quantizedGolden[i],
 					hardwareDiff
 				);
@@ -308,12 +370,36 @@ void* swmain(void* param) {
 		quantizationDiffSum += quantizationDiff;
 	}
 
-	int resultCnt = INPUT_CNT * OUTPUT_DIM;
+	size_t floatWeightBytes = sizeof(float) * weightValueCnt;
+	size_t floatInputBytes = sizeof(float) * inputValueCnt;
+	size_t packedWeightBytes = sizeof(uint16_t) * weightWordCnt;
+	size_t packedInputBytes = sizeof(uint16_t) * inputWordCnt;
+	size_t floatUartBytes = 5 * (weightValueCnt + inputValueCnt);
+	size_t packedUartBytes = 1 + 3 * (weightWordCnt + inputWordCnt);
+	double payloadReduction =
+		(double)(floatWeightBytes + floatInputBytes) /
+		(double)(packedWeightBytes + packedInputBytes);
+	double uartReduction = (double)floatUartBytes / (double)packedUartBytes;
+	int64_t scalarMacCnt = (int64_t)INPUT_CNT * OUTPUT_DIM * INPUT_DIM;
+	int64_t packedOperationCnt = scalarMacCnt / laneCnt;
+
 	printf( "Quantized Width              : INT%d\n", quantizedWidth );
+	printf( "Packed Lanes per Word        : %d\n", laneCnt );
+	printf( "Input Groups per Vector      : %d\n", groupCnt );
+	printf( "Equivalent Scalar MACs       : %ld\n", (long)scalarMacCnt );
+	printf( "Packed Operations            : %ld\n", (long)packedOperationCnt );
+	printf( "FP32 Weight Payload          : %zu bytes\n", floatWeightBytes );
+	printf( "Packed Weight Payload        : %zu bytes\n", packedWeightBytes );
+	printf( "FP32 Input Payload           : %zu bytes\n", floatInputBytes );
+	printf( "Packed Input Payload         : %zu bytes\n", packedInputBytes );
+	printf( "Payload Reduction            : %.2fx\n", payloadReduction );
+	printf( "FP32 UART Transfer           : %zu bytes\n", floatUartBytes );
+	printf( "Packed UART Transfer         : %zu bytes\n", packedUartBytes );
+	printf( "UART Transfer Reduction      : %.2fx\n", uartReduction );
 	printf( "Input/Weight Scale           : %.10f\n",
 		1.0f / getInputInverseScale(quantizedWidth)
 	);
-	printf( "Output Scale                 : %.10f\n", getOutputScale(quantizedWidth) );
+	printf( "Output Scale                 : %.10f\n", outputScale );
 	printf( "FPGA Mismatch Count          : %d\n", mismatchCnt );
 	printf( "FPGA Average Difference      : %.10f\n", hardwareDiffSum / resultCnt );
 	printf( "FPGA Maximum Difference      : %.10f\n", hardwareDiffMax );
@@ -325,9 +411,13 @@ void* swmain(void* param) {
 
 	free(weights);
 	free(inputs);
-	free(answer);
-	free(quantizedGolden);
 	free(floatGolden);
+	free(quantizedWeights);
+	free(quantizedInputs);
+	free(quantizedGolden);
+	free(hardwareResult);
+	free(packedWeights);
+	free(packedInputs);
 
 	exit(mismatchCnt == 0 ? 0 : 1);
 	return NULL;

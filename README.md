@@ -105,7 +105,7 @@ The stages can be called independently to inspect intermediate Verilog, netlists
 * `projects/basic`: UART streaming, SDRAM read-back, and SimpleFloat MAC example.
 * `projects/matmul`: 4x4 floating-point matrix-multiplication accelerator.
 * `projects/nn_fc`: Fully connected neural-network computation example.
-* `projects/nn_fc_quantized`: Runtime-selectable INT4, INT8, and INT16 fully connected neural-network example using `QuantizedMath`.
+* `projects/nn_fc_quantized`: Packed runtime-selectable INT4, INT8, and INT16 fully connected neural-network example using `QuantizedMath` and SDRAM burst reads.
 * `projects/nn_fc_zfpe`: Fully connected neural-network design integrating ZFP-style compression and decompression blocks.
 
 ## Adding a new project

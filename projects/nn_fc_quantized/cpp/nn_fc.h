@@ -1,21 +1,23 @@
 #ifndef __NN_FC_QUANTIZED_H__
 #define __NN_FC_QUANTIZED_H__
 
+#include <stdint.h>
+
 
 typedef struct FcResult {
-	float value;
+	int32_t value;
 	int inputIdx;
 	int outputIdx;
 	bool valid;
 } FcResult;
 
 void nnFc(
-	float* matrix,
-	float* input,
+	const uint16_t* packedWeights,
+	const uint16_t* packedInputs,
 	int inputCnt,
-	int inputDim,
+	int groupCnt,
 	int outputDim,
-	float* answer
+	int32_t* answer
 );
 
 
