@@ -341,7 +341,8 @@ function Int#(32) roundFloatToInt32(Float value);
 	end else if ( exponent >= fromInteger(158) ) begin
 		result = negative ? unpack(32'h80000000) : unpack(32'h7fffffff);
 	end else begin
-		UInt#(32) significand = zeroExtend({1'b1, fraction});
+		Bit#(32) significandBits = zeroExtend({1'b1, fraction});
+		UInt#(32) significand = unpack(significandBits);
 		UInt#(32) magnitude = 0;
 
 		if ( exponent <= fromInteger(150) ) begin
@@ -367,9 +368,41 @@ function Int#(32) roundFloatToInt32(Float value);
 endfunction
 
 function Float int32ToFloat(Int#(32) value);
-	FloatingPoint#(8, 23) valueFP = fromInt32(value);
-	Float result = fromFP(valueFP);
-	return result;
+	Bit#(32) valueBits = pack(value);
+	Bool negative = value < 0;
+	Bit#(32) magnitude = negative ? (~valueBits + 1) : valueBits;
+	Bit#(8) exponent = 0;
+	Bit#(23) fraction = 0;
+
+	if ( magnitude != 0 ) begin
+		Bit#(5) mostSignificantIdx = 0;
+		for ( Integer i = 0; i < 32; i = i + 1 ) begin
+			if ( magnitude[i] == 1 ) begin
+				mostSignificantIdx = fromInteger(i);
+			end
+		end
+
+		Bit#(5) normalizeShift = fromInteger(31) - mostSignificantIdx;
+		Bit#(64) normalized = zeroExtend(magnitude) << normalizeShift;
+		Bit#(25) significand = zeroExtend(normalized[31:8]);
+		Bool roundUp = normalized[7] == 1 &&
+			(normalized[6:0] != 0 || normalized[8] == 1);
+
+		exponent = zeroExtend(mostSignificantIdx) + fromInteger(127);
+		if ( roundUp ) begin
+			significand = significand + 1;
+		end
+
+		if ( significand[24] == 1 ) begin
+			exponent = exponent + 1;
+			fraction = 0;
+		end else begin
+			fraction = significand[22:0];
+		end
+	end
+
+	Bit#(32) resultBits = {pack(negative), exponent, fraction};
+	return unpack(resultBits);
 endfunction
 
 
