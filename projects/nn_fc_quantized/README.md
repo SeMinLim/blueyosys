@@ -12,24 +12,21 @@ The Host sends one runtime width byte (`4`, `8`, or `16`) before the original UA
 | `8` | 0.125 | 32.0 | `acc >> 11` with rounding | 32-bit |
 | `16` | 1/1024 | 0.25 | `acc >> 18` with rounding | 64-bit |
 
-All modes use signed symmetric quantization with zero-point 0. Width selection is runtime configuration and no longer changes the synthesized hardware.
+All modes use signed symmetric quantization with zero-point 0. Width selection is runtime configuration and does not change the synthesized hardware.
+
+Set the width directly in `projects/nn_fc_quantized/cpp/main.cpp`:
+
+```cpp
+const int quantizedWidth = 8;
+```
+
+The same Host source is used by Bluesim and by the FPGA Host executable, and it sends this value to the FPGA before sending weights and inputs.
 
 ```bash
 make runsim PROJECT=nn_fc_quantized BOARD=ulx3s-85f
 make synth PROJECT=nn_fc_quantized BOARD=ulx3s-85f
 make host PROJECT=nn_fc_quantized
-```
-
-Select the width for Bluesim through `NN_FC_WIDTH`:
-
-```bash
-NN_FC_WIDTH=4 make runsim PROJECT=nn_fc_quantized BOARD=ulx3s-85f
-```
-
-Select the width for the FPGA Host executable with the second argument:
-
-```bash
-projects/nn_fc_quantized/cpp/obj/main /dev/ttyUSB0 8
+projects/nn_fc_quantized/cpp/obj/main /dev/ttyUSB0
 ```
 
 The Host compares FPGA output against an integer quantized golden model and separately reports the error relative to the floating-point fully connected layer.
