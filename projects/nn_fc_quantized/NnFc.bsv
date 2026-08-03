@@ -3,6 +3,7 @@ import RegFile::*;
 import Vector::*;
 
 import QuantizedMath::*;
+import QuantizedMult18x18D::*;
 
 
 typedef 4 PackedPipelineDepth;
@@ -18,6 +19,13 @@ typedef struct {
 	Bool firstGroup;
 	Bool lastGroup;
 } PackedMacRequest deriving (Eq, Bits);
+
+typedef struct {
+	Bit#(8) inputIdx;
+	Bit#(6) outputIdx;
+	Bool firstGroup;
+	Bool lastGroup;
+} PackedMacMetadata deriving (Eq, Bits);
 
 typedef struct {
 	Vector#(4, Int#(32)) laneProducts;
@@ -61,6 +69,8 @@ endinterface
 module mkNnFc(NnFcIfc);
 	FIFO#(PackedMacRequest) requestQ <-
 		mkSizedFIFO(valueOf(PackedPipelineDepth));
+	FIFO#(PackedMacMetadata) int16MetadataQ <-
+		mkSizedFIFO(valueOf(QuantizedMult18x18DQueueDepth));
 	FIFO#(PackedMacProducts) productQ <-
 		mkSizedFIFO(valueOf(PackedPipelineDepth));
 	FIFO#(PackedMacPartial) partialQ <-
@@ -68,14 +78,15 @@ module mkNnFc(NnFcIfc);
 	FIFO#(Tuple3#(Int#(32), Bit#(8), Bit#(8))) outputQ <-
 		mkSizedFIFO(valueOf(PackedResultQueueDepth));
 
+	Int16MultiplyIfc int16Multiplier <- mkQuantizedMult18x18D;
 	RegFile#(Bit#(6), Int#(64)) accumulatorFile <- mkRegFileFull;
 	Reg#(Bit#(5)) quantizedWidth <- mkReg(8);
 
 	//------------------------------------------------------------------------------------
 	// [STAGE 1]
-	// Unpack one 16-bit input/weight pair and execute runtime-selected SIMD multiplies
+	// Unpack and execute combinational INT4 or INT8 SIMD multiplications
 	//------------------------------------------------------------------------------------
-	rule processMultiply;
+	rule processMultiplyInt4Int8 ( quantizedWidth != 16 );
 		requestQ.deq;
 		let request = requestQ.first;
 		Vector#(4, Int#(32)) products = replicate(0);
@@ -94,7 +105,7 @@ module mkNnFc(NnFcIfc);
 			products[1] = signExtend(multiplyInt4(input1, weight1));
 			products[2] = signExtend(multiplyInt4(input2, weight2));
 			products[3] = signExtend(multiplyInt4(input3, weight3));
-		end else if ( request.width == 8 ) begin
+		end else begin
 			QInt8 input0 = unpack(request.inputWord[7:0]);
 			QInt8 input1 = unpack(request.inputWord[15:8]);
 			QInt8 weight0 = unpack(request.weightWord[7:0]);
@@ -102,10 +113,6 @@ module mkNnFc(NnFcIfc);
 
 			products[0] = signExtend(multiplyInt8(input0, weight0));
 			products[1] = signExtend(multiplyInt8(input1, weight1));
-		end else begin
-			QInt16 input0 = unpack(request.inputWord);
-			QInt16 weight0 = unpack(request.weightWord);
-			products[0] = multiplyInt16(input0, weight0);
 		end
 
 		productQ.enq(PackedMacProducts{
@@ -119,7 +126,47 @@ module mkNnFc(NnFcIfc);
 	endrule
 
 	//------------------------------------------------------------------------------------
+	// [STAGE 1]
+	// Issue signed INT16 multiplication through the registered ECP5 MULT18X18D
+	//------------------------------------------------------------------------------------
+	rule processMultiplyInt16 ( quantizedWidth == 16 );
+		requestQ.deq;
+		let request = requestQ.first;
+		QInt16 input0 = unpack(request.inputWord);
+		QInt16 weight0 = unpack(request.weightWord);
+
+		int16Multiplier.put(input0, weight0);
+		int16MetadataQ.enq(PackedMacMetadata{
+			inputIdx: request.inputIdx,
+			outputIdx: request.outputIdx,
+			firstGroup: request.firstGroup,
+			lastGroup: request.lastGroup
+		});
+	endrule
+
+	//------------------------------------------------------------------------------------
 	// [STAGE 2]
+	// Align the registered INT16 DSP result with its packed-operation metadata
+	//------------------------------------------------------------------------------------
+	rule receiveMultiplyInt16 ( quantizedWidth == 16 );
+		let product <- int16Multiplier.get;
+		int16MetadataQ.deq;
+		let metadata = int16MetadataQ.first;
+		Vector#(4, Int#(32)) products = replicate(0);
+		products[0] = product;
+
+		productQ.enq(PackedMacProducts{
+			laneProducts: products,
+			inputIdx: metadata.inputIdx,
+			outputIdx: metadata.outputIdx,
+			width: 16,
+			firstGroup: metadata.firstGroup,
+			lastGroup: metadata.lastGroup
+		});
+	endrule
+
+	//------------------------------------------------------------------------------------
+	// [STAGE 3]
 	// Reduce four INT4, two INT8, or one INT16 products into one partial sum
 	//------------------------------------------------------------------------------------
 	rule processReduce;
@@ -145,7 +192,7 @@ module mkNnFc(NnFcIfc);
 	endrule
 
 	//------------------------------------------------------------------------------------
-	// [STAGE 3]
+	// [STAGE 4]
 	// Update one of 64 wide accumulators and requantize a completed dot product
 	//------------------------------------------------------------------------------------
 	rule processAccumulate;
