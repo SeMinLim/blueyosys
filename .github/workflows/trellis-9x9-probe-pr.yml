@@ -1,0 +1,36 @@
+name: Trellis 9x9 DSP Probe PR
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out probe branch
+        uses: actions/checkout@v4
+
+      - name: Install OSS CAD Suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL \
+            https://github.com/YosysHQ/oss-cad-suite-build/releases/download/2026-08-03/oss-cad-suite-linux-x64-20260803.tgz \
+            -o /tmp/oss-cad-suite.tgz
+          tar -xzf /tmp/oss-cad-suite.tgz -C /tmp
+          echo "/tmp/oss-cad-suite/bin" >> "$GITHUB_PATH"
+
+      - name: Run probe
+        shell: bash
+        run: bash experiments/trellis-9x9-probe.sh
+
+      - name: Upload probe logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: trellis-9x9-probe
+          path: probe/
