@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+mkdir -p probe
+cd probe
+
+yosys -V | tee versions.txt
+nextpnr-ecp5 --version | tee -a versions.txt
+ecppack --version 2>&1 | head -n 1 | tee -a versions.txt || true
+
+YOSYS_DATDIR="$(yosys-config --datdir)"
+{
+	echo "Yosys ECP5 primitive declarations containing MULT9X9:"
+	grep -n "module MULT9X9" "$YOSYS_DATDIR/lattice/cells_bb_ecp5.v" || true
+	echo
+	echo "Yosys ECP5 primitive declaration for MULT18X18D:"
+	grep -n "module MULT18X18D" "$YOSYS_DATDIR/lattice/cells_bb_ecp5.v" || true
+} | tee primitive-model.txt
+
+cat > generic9x9.v <<'EOF'
+module top (
+	input clk,
+	input signed [8:0] a0,
+	input signed [8:0] b0,
+	input signed [8:0] a1,
+	input signed [8:0] b1,
+	input signed [8:0] a2,
+	input signed [8:0] b2,
+	input signed [8:0] a3,
+	input signed [8:0] b3,
+	output reg signed [17:0] y0,
+	output reg signed [17:0] y1,
+	output reg signed [17:0] y2,
+	output reg signed [17:0] y3
+);
+	always @(posedge clk) begin
+		y0 <= a0 * b0;
+		y1 <= a1 * b1;
+		y2 <= a2 * b2;
+		y3 <= a3 * b3;
+	end
+endmodule
+EOF
+
+yosys -ql generic9x9-yosys.log -p \
+	'read_verilog generic9x9.v; synth_ecp5 -top top -json generic9x9.json; stat -top top'
+
+python3 - <<'PY' | tee generic9x9-cells.txt
+import collections
+import json
+
+with open("generic9x9.json", "r", encoding="utf-8") as handle:
+	design = json.load(handle)
+cells = design["modules"]["top"]["cells"]
+counts = collections.Counter(cell["type"] for cell in cells.values())
+for cell_type, count in sorted(counts.items()):
+	print(f"{cell_type}: {count}")
+PY
+
+nextpnr-ecp5 \
+	--85k \
+	--package CABGA381 \
+	--freq 100 \
+	--json generic9x9.json \
+	--textcfg generic9x9.config \
+	--report generic9x9-nextpnr.json \
+	> generic9x9-nextpnr.log 2>&1
+ecppack generic9x9.config generic9x9.bit
+
+runDirectProbe() {
+	local cellName="$1"
+	local stem="$2"
+
+	cat > "${stem}.v" <<EOF
+(* blackbox *)
+module ${cellName} (
+	input [8:0] A,
+	input [8:0] B,
+	output [17:0] P
+);
+endmodule
+
+module top (
+	input [8:0] a,
+	input [8:0] b,
+	output [17:0] p
+);
+	${cellName} multiplier (
+		.A(a),
+		.B(b),
+		.P(p)
+	);
+endmodule
+EOF
+
+	yosys -ql "${stem}-yosys.log" -p \
+		"read_verilog ${stem}.v; synth_ecp5 -top top -json ${stem}.json; stat -top top"
+
+	set +e
+	nextpnr-ecp5 \
+		--85k \
+		--package CABGA381 \
+		--json "${stem}.json" \
+		--textcfg "${stem}.config" \
+		> "${stem}-nextpnr.log" 2>&1
+	local pnrStatus=$?
+	set -e
+
+	echo "${cellName} nextpnr exit status: ${pnrStatus}" | tee "${stem}-status.txt"
+	cat "${stem}-nextpnr.log"
+}
+
+runDirectProbe MULT9X9C direct-mult9x9c
+runDirectProbe MULT9X9D direct-mult9x9d
+
+{
+	echo "=== Tool versions ==="
+	cat versions.txt
+	echo
+	echo "=== Primitive model ==="
+	cat primitive-model.txt
+	echo
+	echo "=== Generic four-lane signed 9x9 cell types ==="
+	cat generic9x9-cells.txt
+	echo
+	echo "Generic 9x9 PnR: PASS"
+	echo "Generic 9x9 bitstream size: $(stat -c %s generic9x9.bit) bytes"
+	echo
+	cat direct-mult9x9c-status.txt
+	cat direct-mult9x9d-status.txt
+} | tee probe-summary.txt
