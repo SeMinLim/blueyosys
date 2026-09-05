@@ -1,9 +1,9 @@
-PROJECTS := basic matmul nn_fc nn_fc_quantized nn_fc_zfpe
+PROJECTS := basic matmul nn_fc nn_fc_quantized nn_fc_zfpe sway_observation_1
 PROJECT ?= basic
 BOARD ?= ulx3s-85f
 
 .PHONY: help verilog netlist pnr bitstream synth host \
-	bsim runsim program clean clean-all
+	bsim runsim test program clean clean-all
 
 help:
 	@printf '%s\n' \
@@ -11,10 +11,11 @@ help:
 		"  make synth PROJECT=basic BOARD=ulx3s-85f" \
 		"  make verilog PROJECT=basic BOARD=ulx3s-85f" \
 		"  make bsim PROJECT=basic BOARD=ulx3s-85f" \
+		"  make test PROJECT=sway_observation_1" \
 		"  make host PROJECT=basic" \
 		"Reports are written under projects/<project>/build/."
 
-verilog netlist pnr bitstream synth host bsim runsim program clean:
+verilog netlist pnr bitstream synth host bsim runsim test program clean:
 	@test -d "projects/$(PROJECT)" || { \
 		echo "Unknown PROJECT=$(PROJECT)." >&2; \
 		exit 2; \
