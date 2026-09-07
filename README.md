@@ -117,5 +117,6 @@ The stages can be called independently to inspect intermediate Verilog, netlists
 
 ## Notes
 * Maintained by Se-Min Lim.
+* Do not create new `.md` files without the user's explicit permission. Do not create `.gitignore` files.
 * The current production target is the Lattice ECP5-based ULX3S-85F.
 * Board-independent projects should depend on `lib/` and abstract board interfaces rather than FPGA- or board-specific implementations.
