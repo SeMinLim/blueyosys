@@ -1,4 +1,4 @@
-PROJECTS := basic matmul nn_fc nn_fc_quantized nn_fc_zfpe sway_observation_1 sway_observation_1/step4_projection_probe
+PROJECTS := basic matmul nn_fc nn_fc_quantized nn_fc_zfpe sway_observation
 PROJECT ?= basic
 BOARD ?= ulx3s-85f
 

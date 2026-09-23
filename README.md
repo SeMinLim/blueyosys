@@ -8,7 +8,7 @@ A Bluespec SystemVerilog development environment for Lattice ECP5 FPGA kernels. 
 
 Use Linux with GNU Make, GCC/G++, Python 3, and pthread support. Install Bluespec Compiler (`bsc`) and Bluesim separately. [OSS CAD Suite](https://github.com/YosysHQ/oss-cad-suite-build/releases) supplies Yosys, `nextpnr-ecp5`, `ecppack`, and `openFPGALoader`; select the archive for your host architecture and enable its `environment` script.
 
-Project-specific dependencies are listed in each project's README. Sway requires NumPy.
+Project-specific dependencies are listed in each project's README. Sway uses the checked-in model tables for normal builds; regenerating its reference data requires NumPy and PyTorch.
 
 ## How to build
 
@@ -60,7 +60,7 @@ Makefile    Project dispatcher
 | `nn_fc` | Fully connected neural-network computation |
 | `nn_fc_quantized` | INT4/INT8/INT16 fully connected computation |
 | `nn_fc_zfpe` | Fully connected computation with ZFP-style compression |
-| [sway_observation_1](projects/sway_observation_1/README.md) | Compact selective-SSM baseline |
+| [sway_observation](projects/sway_observation/README.md) | MARS INT8 PTQ model and dedicated-engine baseline |
 
 To add a project, copy the closest example into `projects/`, set `ROOTDIR` and `PROJECT_NAME` in its Makefile, include `$(ROOTDIR)/build.mk`, and register the project in the root Makefile.
 
