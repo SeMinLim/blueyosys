@@ -81,5 +81,5 @@ Timing failure returns an error even when a summary report is generated. A saved
 Clean one project with `make clean PROJECT=<name>`, or all included projects with `make clean-all`.
 
 ## Notes
-
-Maintained by Se-Min Lim. 
+* Maintained by Se-Min Lim.
+* Developed in OSS-CAD-Suite 2026-07-11
