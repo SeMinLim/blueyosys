@@ -82,6 +82,4 @@ Clean one project with `make clean PROJECT=<name>`, or all included projects wit
 
 ## Notes
 
-Maintained by Se-Min Lim. Keep project logic separate from shared libraries and board-specific code.
-
-Keep READMEs concise, focused on essential information, and easy for readers to follow. Do not create new `.md` files without the user's explicit permission. Do not create `.gitignore` files.
+Maintained by Se-Min Lim. 
